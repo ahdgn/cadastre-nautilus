@@ -9,7 +9,7 @@
 
   <!-- Librairies vendorisées (pas de CDN, pas de fonte externe) -->
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="css/style.css?v=20260801-1">
+  <link rel="stylesheet" href="css/style.css?v=20260801-2">
 </head>
 <body>
 
@@ -55,12 +55,12 @@
 
       <!-- Contenance -->
       <div class="filter-group">
-        <span class="filter-label" id="label-contenance">Contenance&nbsp;: <strong id="contenance-label">≥ 3 ha</strong></span>
+        <span class="filter-label" id="label-contenance">Contenance&nbsp;: <strong id="contenance-label">toutes</strong></span>
         <div class="range-row" role="group" aria-labelledby="label-contenance">
           <input type="number" id="filter-min" step="1000" placeholder="min m²" aria-label="Contenance minimale en m²">
           <input type="number" id="filter-max" step="1000" placeholder="max m²" aria-label="Contenance maximale en m²">
         </div>
-        <span class="filter-hint">3 ha ≈ unité de méthanisation avec épuration, stockage et poste d'injection.</span>
+        <span class="filter-hint">Surface cadastrale, en m². 10 000 m² = 1 ha.</span>
       </div>
 
       <!-- Zonage PLU -->
@@ -78,13 +78,6 @@
         <span class="filter-hint">Une requête API Carto (module GPU) sur l'emprise communale.</span>
       </div>
 
-      <!-- Distance injecteur -->
-      <div class="filter-group">
-        <label class="filter-label" for="filter-dinj">Distance max. à un injecteur (km)</label>
-        <input type="number" id="filter-dinj" step="1" min="0" placeholder="—">
-        <span class="filter-hint">Points d'injection biométhane en service (ODRÉ).</span>
-      </div>
-
       <!-- Section -->
       <div class="filter-group">
         <label class="filter-label" for="filter-section">Section cadastrale</label>
@@ -100,17 +93,28 @@
         </div>
       </div>
 
-      <!-- Couches -->
+      <!-- Affichage -->
       <div class="filter-group">
         <span class="filter-label" id="label-couches">Affichage</span>
         <div class="checkbox-group" role="group" aria-labelledby="label-couches">
           <label><input type="checkbox" id="layer-batiments" checked> Bâti cadastré</label>
-          <label><input type="checkbox" id="layer-injecteurs" checked> Injecteurs biométhane</label>
         </div>
         <div class="segmented segmented-sm" id="color-mode" role="group" aria-label="Coloration des parcelles">
           <button class="seg-btn" data-mode="contenance" aria-pressed="true">Contenance</button>
           <button class="seg-btn" data-mode="zonage" aria-pressed="false">Zonage</button>
         </div>
+      </div>
+
+      <!-- Couche de référence (optionnelle) -->
+      <div class="filter-group">
+        <span class="filter-label" id="label-reference">Couche de référence</span>
+        <div class="checkbox-group" role="group" aria-labelledby="label-reference">
+          <label><input type="checkbox" id="layer-injecteurs"> Sites d'injection biométhane</label>
+        </div>
+        <label class="filter-label" for="filter-dinj">Distance max. à un site (km)</label>
+        <input type="number" id="filter-dinj" step="1" min="0" placeholder="—">
+        <span class="filter-hint">Jeu d'exemple (ODRÉ). D'autres couches de référence
+          — postes sources, ICPE, friches — viendront s'ajouter ici.</span>
       </div>
     </aside>
 
@@ -123,6 +127,7 @@
       <!-- Carte -->
       <div class="map-container">
         <div id="map" aria-label="Carte des parcelles"></div>
+        <p class="map-notice" id="carte-tronquee" role="status" hidden></p>
         <div class="map-empty" id="map-empty" hidden>
           <p id="map-empty-text">Recherchez une commune pour charger son cadastre.</p>
           <button class="btn-secondary" id="map-empty-reset" hidden>Réinitialiser les filtres</button>
@@ -131,12 +136,20 @@
 
       <!-- Panneau bas -->
       <section class="bottom-panel" id="bottom-panel" aria-label="Parcelle et données">
+        <div class="panel-resizer" id="panel-resizer" role="separator" aria-orientation="horizontal"
+             aria-label="Redimensionner le panneau" title="Glisser pour redimensionner — double-clic pour réinitialiser"></div>
         <div class="tab-bar">
           <div role="tablist" aria-label="Vues du panneau">
             <button class="tab-btn" id="tab-btn-parcelle" role="tab" aria-selected="true"
                     aria-controls="tab-parcelle" data-tab="parcelle">Parcelle</button>
             <button class="tab-btn" id="tab-btn-donnees" role="tab" aria-selected="false"
                     aria-controls="tab-donnees" data-tab="donnees">Données</button>
+          </div>
+          <div class="panel-actions">
+            <button class="icon-btn" id="panel-maximize" aria-label="Agrandir ou réduire le panneau" title="Agrandir / réduire">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M7 14l5-5 5 5"
+                stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
           </div>
         </div>
 
@@ -171,8 +184,9 @@
                   <th scope="col" data-sort="contenance" class="col-num">Contenance (ha)</th>
                   <th scope="col" data-sort="nbBatiments" class="col-num">Bâti</th>
                   <th scope="col" data-sort="zonePLU">Zone PLU</th>
-                  <th scope="col" data-sort="distInjecteur" class="col-num">Injecteur (km)</th>
-                  <th scope="col" data-sort="nomInjecteur">Injecteur le plus proche</th>
+                  <th scope="col" data-sort="distInjecteur" class="col-num"
+                      title="Distance au site le plus proche de la couche de référence chargée">Réf. (km)</th>
+                  <th scope="col" data-sort="nomInjecteur">Site de référence le plus proche</th>
                 </tr>
               </thead>
               <tbody id="table-body"></tbody>
@@ -204,12 +218,12 @@
   <script src="vendor/leaflet/leaflet.js"></script>
 
   <!-- App -->
-  <script src="js/config.js?v=20260801-1"></script>
-  <script src="js/geo.js?v=20260801-1"></script>
-  <script src="js/api.js?v=20260801-1"></script>
-  <script src="js/filters.js?v=20260801-1"></script>
-  <script src="js/map.js?v=20260801-1"></script>
-  <script src="js/table.js?v=20260801-1"></script>
-  <script src="js/app.js?v=20260801-1"></script>
+  <script src="js/config.js?v=20260801-2"></script>
+  <script src="js/geo.js?v=20260801-2"></script>
+  <script src="js/api.js?v=20260801-2"></script>
+  <script src="js/filters.js?v=20260801-2"></script>
+  <script src="js/map.js?v=20260801-2"></script>
+  <script src="js/table.js?v=20260801-2"></script>
+  <script src="js/app.js?v=20260801-2"></script>
 </body>
 </html>

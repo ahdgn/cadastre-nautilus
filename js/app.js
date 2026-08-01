@@ -14,6 +14,7 @@ const App = (() => {
   let injecteursProches = [];
   let zones = [];
   let selectionId = null;
+  let setSidebar = () => {};        // défini dans brancherUI, utilisé aussi à la sélection d'une commune
 
   const el = id => document.getElementById(id);
 
@@ -30,9 +31,10 @@ const App = (() => {
     try {
       injecteurs = await API.chargerInjecteurs();
       MapView.dessinerInjecteurs(injecteurs);
-      meta(`${fmtNum(injecteurs.length)} points d'injection biométhane`);
+      MapView.toggleCouche('injecteurs', el('layer-injecteurs').checked);
+      meta('Recherchez une commune pour charger son cadastre');
     } catch (e) {
-      meta('Injecteurs indisponibles');
+      meta('Couche de référence indisponible');
       console.error(e);
     }
 
@@ -44,12 +46,31 @@ const App = (() => {
 
   /* ---- Interface ---------------------------------------------------------- */
   function brancherUI() {
-    // sidebar
-    el('sidebar-toggle').addEventListener('click', () => {
-      const s = el('sidebar');
-      const ouvert = !s.classList.toggle('collapsed');
-      el('sidebar-toggle').setAttribute('aria-expanded', String(ouvert));
-      setTimeout(() => MapView.invalidate && MapView.invalidate(), 200);
+    // Sidebar — sous 860 px elle passe en surcouche au-dessus de la carte :
+    // elle doit donc démarrer fermée, se refermer sur le voile et après un
+    // choix dans un sélecteur (cf. biomethane-france PR #2).
+    const sidebar = el('sidebar');
+    const backdrop = el('sidebar-backdrop');
+    const enSurcouche = () => window.matchMedia('(max-width: 860px)').matches;
+
+    setSidebar = function (fermee) {
+      sidebar.classList.toggle('collapsed', fermee);
+      backdrop.hidden = fermee || !enSurcouche();
+      el('sidebar-toggle').setAttribute('aria-expanded', String(!fermee));
+      setTimeout(MapView.invalidate, 200);
+    };
+
+    if (enSurcouche()) setSidebar(true);
+    el('sidebar-toggle').addEventListener('click', () =>
+      setSidebar(!sidebar.classList.contains('collapsed')));
+    backdrop.addEventListener('click', () => setSidebar(true));
+    // un choix dans un sélecteur referme la surcouche pour montrer le résultat ;
+    // pas les cases à cocher ni les champs, qu'on ajuste en plusieurs gestes
+    sidebar.addEventListener('change', (e) => {
+      if (enSurcouche() && e.target.tagName === 'SELECT') setSidebar(true);
+    });
+    window.addEventListener('resize', () => {
+      if (!enSurcouche()) { backdrop.hidden = true; sidebar.classList.remove('collapsed'); }
     });
 
     // onglets
@@ -60,6 +81,55 @@ const App = (() => {
         document.querySelectorAll('.tab-content').forEach(c =>
           c.hidden = c.id !== `tab-${btn.dataset.tab}`);
       });
+    });
+
+    // Panneau bas redimensionnable — la carte est l'objet principal ici, il faut
+    // pouvoir lui rendre de la place (repris de biomethane-france).
+    const panel = el('bottom-panel');
+    const resizer = el('panel-resizer');
+    const MIN_H = 41;
+    const mainH = () => document.querySelector('.main-content').clientHeight;
+    const defaultH = () => Math.max(200, Math.min(360, Math.round(mainH() * 0.34)));
+    const maxH = () => mainH() - 160;
+
+    function setPanelHeight(h, persist = true) {
+      const clamped = Math.max(MIN_H, Math.min(maxH(), h));
+      panel.style.height = clamped + 'px';
+      if (persist) localStorage.setItem('cadastre-panel-h', String(Math.round(clamped)));
+      MapView.invalidate();
+    }
+
+    const savedH = parseInt(localStorage.getItem('cadastre-panel-h') || '', 10);
+    panel.style.height = (savedH >= 120 ? savedH : defaultH()) + 'px';
+    requestAnimationFrame(MapView.invalidate);
+
+    let dragging = false, startY = 0, startH = 0;
+    resizer.addEventListener('pointerdown', (e) => {
+      dragging = true; startY = e.clientY; startH = panel.offsetHeight;
+      resizer.classList.add('dragging');
+      resizer.setPointerCapture(e.pointerId);
+    });
+    resizer.addEventListener('pointermove', (e) => {
+      if (dragging) setPanelHeight(startH + (startY - e.clientY), false);
+    });
+    resizer.addEventListener('pointerup', (e) => {
+      dragging = false;
+      resizer.classList.remove('dragging');
+      resizer.releasePointerCapture(e.pointerId);
+      if (panel.offsetHeight >= 120) localStorage.setItem('cadastre-panel-h', String(panel.offsetHeight));
+    });
+    resizer.addEventListener('dblclick', () => setPanelHeight(defaultH()));
+    resizer.tabIndex = 0;
+    resizer.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp') { e.preventDefault(); setPanelHeight(panel.offsetHeight + 24); }
+      if (e.key === 'ArrowDown') { e.preventDefault(); setPanelHeight(panel.offsetHeight - 24); }
+    });
+
+    const maximizeBtn = el('panel-maximize');
+    maximizeBtn.addEventListener('click', () => {
+      const auMax = panel.offsetHeight >= maxH() - 20;
+      setPanelHeight(auMax ? defaultH() : maxH());
+      maximizeBtn.classList.toggle('flipped', !auMax);
     });
 
     // recherche de commune
@@ -99,6 +169,7 @@ const App = (() => {
         const c = communes[li.dataset.i];
         el('filter-commune').value = c.nom;
         masquerSuggestions();
+        if (window.matchMedia('(max-width: 860px)').matches) setSidebar(true);
         chargerCommune(c);
       }));
     } catch (e) {
@@ -266,15 +337,18 @@ const App = (() => {
   /* ---- Rendu --------------------------------------------------------------- */
   function rafraichir() {
     const sel = Filters.filtrer(parcelles);
-    const affiche = MapView.dessinerParcelles(sel);
+    const dessinees = MapView.dessinerParcelles(sel);
 
-    el('map-empty').hidden = !(parcelles.length === 0 || sel.length === 0 || !affiche);
+    el('map-empty').hidden = !(parcelles.length === 0 || sel.length === 0);
     el('map-empty-reset').hidden = parcelles.length === 0;
-    el('map-empty-text').textContent =
-      parcelles.length === 0 ? 'Recherchez une commune pour charger son cadastre.'
-      : sel.length === 0 ? 'Aucune parcelle ne correspond aux filtres.'
-      : `${fmtNum(sel.length)} parcelles : trop nombreuses pour la carte. ` +
-        `Resserrez les filtres — le tableau et l'export restent complets.`;
+    el('map-empty-text').textContent = parcelles.length === 0
+      ? 'Recherchez une commune pour charger son cadastre.'
+      : 'Aucune parcelle ne correspond aux filtres.';
+
+    el('carte-tronquee').hidden = dessinees >= sel.length;
+    el('carte-tronquee').textContent =
+      `Carte limitée aux ${fmtNum(dessinees)} plus grandes parcelles sur ${fmtNum(sel.length)} ` +
+      `— tableau et export complets.`;
 
     majKPI(sel);
     DataTable.update(sel);
@@ -327,9 +401,9 @@ const App = (() => {
           <dt>Arpentée</dt><dd>${p.arpente ? 'oui' : 'non'}</dd>
         </dl>
         <dl>
-          <dt>Injecteur le plus proche</dt>
+          <dt>Site de référence</dt>
           <dd>${p.distInjecteur == null ? '> 150 km' : fmtNum(p.distInjecteur, 1) + ' km'}</dd>
-          <dt>Site</dt><dd>${escapeHtml(p.nomInjecteur || '—')}</dd>
+          <dt>lequel</dt><dd>${escapeHtml(p.nomInjecteur || '—')}</dd>
           <dt>MAJ cadastre</dt><dd>${escapeHtml(p.updated || '—')}</dd>
           <dt>Centroïde</dt><dd>${lat}, ${lon}</dd>
         </dl>

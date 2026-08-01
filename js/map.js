@@ -38,6 +38,14 @@ const MapView = (() => {
     coucheParcelles = L.geoJSON(null).addTo(map);
     coucheInjecteurs = L.layerGroup().addTo(map);
 
+    // Événements posés une seule fois sur le groupe, pas sur chaque parcelle :
+    // une commune peut en compter 40 000, et autant d'écouteurs (ou de popups
+    // construits d'avance) fige le navigateur au rendu.
+    coucheParcelles.on('click', e => onSelect(e.layer.feature.properties.id));
+    coucheParcelles.on('mouseover', e => e.layer.setStyle({ weight: 3, color: PALETTE.navy }));
+    coucheParcelles.on('mouseout', e => e.layer.setStyle({ weight: 1, color: '#ffffff' }));
+    coucheParcelles.bindPopup(l => popup(App.parcelle(l.feature.properties.id)));
+
     creerLegende();
     majLegende();
   }
@@ -59,23 +67,23 @@ const MapView = (() => {
   }
 
   /* ---- Couches ----------------------------------------------------------- */
+  /* Retourne le nombre de parcelles réellement dessinées. Au-delà du plafond on
+     dessine les plus grandes plutôt que rien : l'utilisateur voit toujours
+     quelque chose, et l'app annonce la troncature. */
   function dessinerParcelles(parcelles) {
     coucheParcelles.clearLayers();
-    if (parcelles.length === 0 || parcelles.length > RENDU.maxPolygones) return false;
+    if (parcelles.length === 0) return 0;
+
+    const affichees = parcelles.length <= RENDU.maxPolygones
+      ? parcelles
+      : [...parcelles].sort((a, b) => b.contenance - a.contenance).slice(0, RENDU.maxPolygones);
 
     coucheParcelles.addData({
       type: 'FeatureCollection',
-      features: parcelles.map(p => ({ type: 'Feature', geometry: p.geometry, properties: { id: p.id } })),
+      features: affichees.map(p => ({ type: 'Feature', geometry: p.geometry, properties: { id: p.id } })),
     });
     coucheParcelles.setStyle(style);
-    coucheParcelles.eachLayer(l => {
-      const p = App.parcelle(l.feature.properties.id);
-      l.bindPopup(popup(p));
-      l.on('click', () => onSelect(p.id));
-      l.on('mouseover', () => l.setStyle({ weight: 3, color: PALETTE.navy }));
-      l.on('mouseout', () => l.setStyle({ weight: 1, color: '#ffffff' }));
-    });
-    return true;
+    return affichees.length;
   }
 
   function dessinerBatiments(fc) {
@@ -104,7 +112,7 @@ const MapView = (() => {
     const rows = [
       ['Contenance', `${fmtHa(p.contenance)} ha`],
       ['Bâtiments', fmtNum(p.nbBatiments)],
-      ['Injecteur', p.distInjecteur == null ? '> 150 km' : `${fmtNum(p.distInjecteur, 1)} km`],
+      ['Site de réf.', p.distInjecteur == null ? '> 150 km' : `${fmtNum(p.distInjecteur, 1)} km`],
     ];
     if (p.zonePLU) rows.push(['Zone PLU', p.zonePLU]);
     return `
@@ -183,7 +191,7 @@ const MapView = (() => {
           </div>`).join('')}
         <div class="legend-item">
           <span class="type-dot" style="background:${PALETTE.sage}"></span>
-          <span class="type-name">Injection biométhane</span>
+          <span class="type-name">Site de référence</span>
         </div>
         <p class="legend-note">Zonage indicatif — seul le document approuvé fait foi.</p>
       </div>`;
