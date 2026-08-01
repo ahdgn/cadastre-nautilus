@@ -1,198 +1,165 @@
-/* =============================================================================
-   Orchestration : recherche commune → chargement PCI → enrichissement → rendu.
-   ========================================================================== */
+/* ============================================
+   App — orchestration
+   recherche commune → PCI Vecteur → enrichissement
+   → filtres → carte, KPI, tableau, panneau parcelle
+   ============================================ */
 
-const APP = {
+const App = (() => {
+  const { fmtNum, fmtHa, escapeHtml, LIENS } = CONFIG;
 
-  commune: null,
-  parcelles: [],          // parcelles enrichies de la commune courante
-  index: new Map(),       // id parcelle -> objet
-  injecteurs: [],
-  injecteursProches: [],  // sous-ensemble pertinent pour la commune courante
-  zones: [],              // zonage PLU de la commune (API Carto GPU)
+  let commune = null;
+  let parcelles = [];
+  const index = new Map();
+  let injecteurs = [];
+  let injecteursProches = [];
+  let zones = [];
+  let selectionId = null;
+
+  const el = id => document.getElementById(id);
 
   /* ---- Démarrage ---------------------------------------------------------- */
-  async init() {
-    CARTE.init();
-    APP.brancherUI();
-    FILTRES.depuisURL();
-    APP.filtresVersUI();
+  async function init() {
+    MapView.init(selectionner);
+    DataTable.init(selectionner);
+    Filters.init(rafraichir);
+    brancherUI();
+
+    Filters.depuisURL();
+    Filters.versControles();
 
     try {
-      APP.injecteurs = await API.chargerInjecteurs();
-      CARTE.dessinerInjecteurs(APP.injecteurs);
-      APP.statut(`${APP.injecteurs.length} points d'injection biométhane chargés (ODRÉ).`);
+      injecteurs = await API.chargerInjecteurs();
+      MapView.dessinerInjecteurs(injecteurs);
+      meta(`${fmtNum(injecteurs.length)} points d'injection biométhane`);
     } catch (e) {
-      APP.statut("Injecteurs indisponibles : " + e.message, true);
+      meta('Injecteurs indisponibles');
+      console.error(e);
     }
 
-    if (FILTRES.etat.insee) {
-      const [c] = await API.chercherCommunes(FILTRES.etat.insee);
-      if (c) APP.chargerCommune(c);
+    if (Filters.etat.insee) {
+      const [c] = await API.chercherCommunes(Filters.etat.insee);
+      if (c) await chargerCommune(c);
     }
-  },
+  }
 
   /* ---- Interface ---------------------------------------------------------- */
-  brancherUI() {
-    const champ = document.getElementById("recherche");
+  function brancherUI() {
+    // sidebar
+    el('sidebar-toggle').addEventListener('click', () => {
+      const s = el('sidebar');
+      const ouvert = !s.classList.toggle('collapsed');
+      el('sidebar-toggle').setAttribute('aria-expanded', String(ouvert));
+      setTimeout(() => MapView.invalidate && MapView.invalidate(), 200);
+    });
+
+    // onglets
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b =>
+          b.setAttribute('aria-selected', String(b === btn)));
+        document.querySelectorAll('.tab-content').forEach(c =>
+          c.hidden = c.id !== `tab-${btn.dataset.tab}`);
+      });
+    });
+
+    // recherche de commune
+    const champ = el('filter-commune');
     let t = null;
-    champ.addEventListener("input", () => {
+    champ.addEventListener('input', () => {
       clearTimeout(t);
       const q = champ.value.trim();
-      if (q.length < 2) return (document.getElementById("suggestions").innerHTML = "");
-      t = setTimeout(async () => {
-        try {
-          const communes = await API.chercherCommunes(q);
-          document.getElementById("suggestions").innerHTML = communes.map((c, i) =>
-            `<li data-i="${i}">${c.nom} <span>${c.code} · ${c.population?.toLocaleString("fr-FR") ?? "?"} hab.</span></li>`
-          ).join("");
-          document.querySelectorAll("#suggestions li").forEach(li => li.onclick = () => {
-            document.getElementById("suggestions").innerHTML = "";
-            champ.value = communes[li.dataset.i].nom;
-            APP.chargerCommune(communes[li.dataset.i]);
-          });
-        } catch (e) { APP.statut(e.message, true); }
-      }, 250);
+      if (q.length < 2) return masquerSuggestions();
+      t = setTimeout(() => suggerer(q), 250);
     });
+    champ.addEventListener('blur', () => setTimeout(masquerSuggestions, 150));
 
-    document.getElementById("btn-zonage").onclick = APP.chargerZonage;
-    document.getElementById("mode-couleur").onchange = (e) => {
-      CARTE.mode = e.target.value;
-      CARTE.legende();
-      APP.rafraichir();
-    };
+    // zonage PLU
+    el('btn-zonage').addEventListener('click', chargerZonage);
 
-    for (const id of ["f-min", "f-max", "f-dinj", "f-section", "f-nue", "f-zone"]) {
-      document.getElementById(id).addEventListener("change", () => {
-        APP.uiVersFiltres();
-        APP.rafraichir();
+    // couches et coloration
+    el('layer-batiments').addEventListener('change', e => MapView.toggleCouche('batiments', e.target.checked));
+    el('layer-injecteurs').addEventListener('change', e => MapView.toggleCouche('injecteurs', e.target.checked));
+    document.querySelectorAll('#color-mode .seg-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#color-mode .seg-btn').forEach(b =>
+          b.setAttribute('aria-pressed', String(b === btn)));
+        MapView.setMode(btn.dataset.mode);
       });
-    }
-    document.getElementById("btn-csv").onclick = () => TABLE.csv();
-    document.getElementById("btn-reset").onclick = () => {
-      Object.assign(FILTRES.etat, CONFIG.filtresDefaut);
-      APP.filtresVersUI(); APP.rafraichir();
-    };
-    document.getElementById("t-batiments").onchange = (e) => {
-      e.target.checked ? CARTE.map.addLayer(CARTE.coucheBatiments)
-                       : CARTE.map.removeLayer(CARTE.coucheBatiments);
-    };
-    document.getElementById("t-injecteurs").onchange = (e) => {
-      e.target.checked ? CARTE.map.addLayer(CARTE.coucheInjecteurs)
-                       : CARTE.map.removeLayer(CARTE.coucheInjecteurs);
-    };
-  },
-
-  filtresVersUI() {
-    const e = FILTRES.etat;
-    document.getElementById("f-min").value = e.contenanceMin ?? "";
-    document.getElementById("f-max").value = e.contenanceMax ?? "";
-    document.getElementById("f-dinj").value = e.distanceInjecteurMax ?? "";
-    document.getElementById("f-section").value = e.section ?? "";
-    document.getElementById("f-zone").value = e.typeZone ?? "";
-    document.getElementById("f-nue").checked = !!e.parcelleNue;
-  },
-
-  uiVersFiltres() {
-    const n = id => {
-      const v = document.getElementById(id).value.trim();
-      return v === "" ? null : Number(v);
-    };
-    Object.assign(FILTRES.etat, {
-      contenanceMin: n("f-min"),
-      contenanceMax: n("f-max"),
-      distanceInjecteurMax: n("f-dinj"),
-      section: document.getElementById("f-section").value.trim(),
-      typeZone: document.getElementById("f-zone").value,
-      parcelleNue: document.getElementById("f-nue").checked,
     });
-  },
+  }
 
-  /* ---- Zonage PLU de la commune (une seule requête API Carto) --------------
-     L'API refuse le contour communal détaillé (URL trop longue) : on interroge
-     sur la bbox, puis on affecte chaque parcelle par point-dans-polygone.      */
-  async chargerZonage() {
-    if (!APP.commune || !APP.parcelles.length) {
-      return APP.statut("Chargez d'abord une commune.", true);
-    }
-    const btn = document.getElementById("btn-zonage");
-    btn.disabled = true;
-    APP.statut("Interrogation du Géoportail de l'urbanisme (API Carto GPU)…");
+  async function suggerer(q) {
     try {
-      let bb = [180, 90, -180, -90];
-      for (const p of APP.parcelles) {
-        const b = GEO.bbox(p.geometry);
-        bb = [Math.min(bb[0], b[0]), Math.min(bb[1], b[1]),
-              Math.max(bb[2], b[2]), Math.max(bb[3], b[3])];
-      }
-      APP.zones = await API.zonageEmprise(bb);
-
-      let affectees = 0;
-      for (const p of APP.parcelles) {
-        for (const z of APP.zones) {
-          if (p.centre[0] < z.bbox[0] || p.centre[0] > z.bbox[2] ||
-              p.centre[1] < z.bbox[1] || p.centre[1] > z.bbox[3]) continue;
-          if (GEO.pointDans(p.centre, z.geometry)) {
-            p.zonePLU = z.libelle; p.typeZone = z.typezone;
-            p.zoneLibLong = z.libelong; p.zoneUrlPlan = z.urlPlan;
-            affectees++;
-            break;
-          }
-        }
-      }
-      document.getElementById("mode-couleur").value = "zonage";
-      CARTE.mode = "zonage";
-      CARTE.legende();
-      APP.rafraichir();
-      APP.statut(APP.zones.length === 0
-        ? `Aucun zonage sur cette emprise : commune au RNU, document non numérisé, ` +
-          `ou non versé au Géoportail de l'urbanisme.`
-        : `${APP.zones.length} zones PLU récupérées — ${affectees}/${APP.parcelles.length} ` +
-          `parcelles rattachées. Zonage indicatif : seul le document approuvé fait foi.`,
-        APP.zones.length === 0);
+      const communes = await API.chercherCommunes(q);
+      const ul = el('suggestions');
+      ul.innerHTML = communes.map((c, i) =>
+        `<li data-i="${i}">${escapeHtml(c.nom)}<span>${c.code} · ${fmtNum(c.population)} hab.</span></li>`).join('');
+      ul.hidden = communes.length === 0;
+      ul.querySelectorAll('li').forEach(li => li.addEventListener('mousedown', () => {
+        const c = communes[li.dataset.i];
+        el('filter-commune').value = c.nom;
+        masquerSuggestions();
+        chargerCommune(c);
+      }));
     } catch (e) {
-      APP.statut("Zonage indisponible : " + e.message, true);
-    } finally {
-      btn.disabled = false;
+      console.error(e);
     }
-  },
+  }
+
+  const masquerSuggestions = () => { el('suggestions').hidden = true; };
+
+  function chargement(visible, texte) {
+    el('loading-overlay').hidden = !visible;
+    if (texte) el('loading-text').textContent = texte;
+  }
+
+  const meta = (txt) => { el('header-meta').textContent = txt; };
 
   /* ---- Chargement d'une commune ------------------------------------------- */
-  async chargerCommune(commune) {
-    APP.commune = commune;
-    APP.zones = [];
-    CARTE.mode = "contenance";
-    document.getElementById("mode-couleur").value = "contenance";
-    CARTE.legende();
-    FILTRES.etat.insee = commune.code;
-    document.getElementById("commune-titre").textContent =
-      `${commune.nom} (${commune.code})`;
-    APP.statut(`Chargement du PCI Vecteur de ${commune.nom}…`);
-    CARTE.cadrerCommune(commune);
+  async function chargerCommune(c) {
+    commune = c;
+    zones = [];
+    selectionId = null;
+    Filters.etat.insee = c.code;
+    el('filter-zone').disabled = true;
+    el('filter-zone').value = '';
+    Filters.etat.typeZone = '';
+    el('btn-zonage').disabled = false;
+    MapView.setMode('contenance');
+    document.querySelectorAll('#color-mode .seg-btn').forEach(b =>
+      b.setAttribute('aria-pressed', String(b.dataset.mode === 'contenance')));
+
+    chargement(true, `Chargement du cadastre de ${c.nom}…`);
+    MapView.cadrerCommune(c);
 
     try {
       const [pFC, bFC] = await Promise.all([
-        API.chargerCouche(commune, "parcelles"),
-        API.chargerCouche(commune, "batiments"),
+        API.chargerCouche(c, 'parcelles'),
+        API.chargerCouche(c, 'batiments'),
       ]);
-      APP.statut(`Enrichissement de ${pFC.features.length} parcelles…`);
-      await new Promise(r => setTimeout(r, 0));   // laisse l'UI respirer
-      APP.enrichir(pFC, bFC);
-      CARTE.dessinerBatiments(bFC);
-      APP.rafraichir();
-      APP.statut(
-        `${APP.parcelles.length} parcelles — PCI Vecteur, MAJ trimestrielle ` +
-        `(source DGFiP, Licence Ouverte).`);
+      chargement(true, `Enrichissement de ${fmtNum(pFC.features.length)} parcelles…`);
+      await new Promise(r => setTimeout(r, 0));
+      enrichir(pFC, bFC);
+      MapView.dessinerBatiments(bFC);
+      el('parcel-pane').innerHTML =
+        '<p class="parcel-empty">Sélectionnez une parcelle sur la carte ou dans le tableau.</p>';
+      rafraichir();
+      meta(`${escapeHtml(c.nom)} (${c.code}) · ${fmtNum(parcelles.length)} parcelles · PCI Vecteur`);
     } catch (e) {
-      APP.statut("Échec du chargement : " + e.message, true);
+      meta('Échec du chargement');
+      el('map-empty-text').textContent = `Chargement impossible : ${e.message}`;
+      el('map-empty').hidden = false;
+      console.error(e);
+    } finally {
+      chargement(false);
     }
-  },
+  }
 
-  /* ---- Enrichissement ------------------------------------------------------
-     centroïde, nombre de bâtiments cadastrés, distance à l'injecteur le plus
-     proche. Le bâti est indexé dans une grille pour éviter le O(n×m).          */
-  enrichir(parcellesFC, batimentsFC) {
-    const PAS = 0.002;                                  // ≈ 150–220 m
+  /* ---- Enrichissement -----------------------------------------------------
+     centroïde, bâtiments cadastrés sur la parcelle, distance à l'injecteur le
+     plus proche. Le bâti est indexé dans une grille pour éviter le O(n×m).    */
+  function enrichir(parcellesFC, batimentsFC) {
+    const PAS = 0.002;                                   // ≈ 150–220 m
     const cle = (x, y) => `${Math.floor(x / PAS)}|${Math.floor(y / PAS)}`;
     const grille = new Map();
     for (const b of batimentsFC.features) {
@@ -203,22 +170,19 @@ const APP = {
       grille.get(k).push(c);
     }
 
-    // On ne compare qu'aux injecteurs dans un rayon raisonnable de la commune.
-    const centreCommune = APP.commune.centre
-      ? APP.commune.centre.coordinates
+    const centreCommune = commune.centre
+      ? commune.centre.coordinates
       : GEO.centroide(parcellesFC.features[0]?.geometry);
-    APP.injecteursProches = APP.injecteurs.filter(
-      i => GEO.distanceKm(centreCommune, i.lonlat) < 150);
+    injecteursProches = injecteurs.filter(i => GEO.distanceKm(centreCommune, i.lonlat) < 150);
 
-    APP.parcelles = [];
-    APP.index.clear();
+    parcelles = [];
+    index.clear();
 
     for (const f of parcellesFC.features) {
       const pr = f.properties;
       const centre = GEO.centroide(f.geometry);
       if (!centre) continue;
 
-      // bâtiments dont le centroïde tombe dans la parcelle
       const bb = GEO.bbox(f.geometry);
       let nb = 0;
       for (let gx = Math.floor(bb[0] / PAS); gx <= Math.floor(bb[2] / PAS); gx++) {
@@ -231,99 +195,169 @@ const APP = {
       }
 
       let dist = null, nomInj = null;
-      for (const i of APP.injecteursProches) {
+      for (const i of injecteursProches) {
         const d = GEO.distanceKm(centre, i.lonlat);
         if (dist == null || d < dist) { dist = d; nomInj = i.nom; }
       }
 
       const p = {
-        id: pr.id, section: pr.section, numero: pr.numero, prefixe: pr.prefixe,
+        id: pr.id, commune: pr.commune, prefixe: pr.prefixe,
+        section: pr.section, numero: pr.numero,
         contenance: pr.contenance ?? 0, arpente: pr.arpente,
         created: pr.created, updated: pr.updated,
         centre, geometry: f.geometry,
         nbBatiments: nb, distInjecteur: dist, nomInjecteur: nomInj,
+        zonePLU: null, typeZone: null, zoneLibLong: null, zoneUrlPlan: null,
       };
-      APP.parcelles.push(p);
-      APP.index.set(p.id, p);
+      parcelles.push(p);
+      index.set(p.id, p);
     }
-  },
+  }
 
-  /* ---- Rendu -------------------------------------------------------------- */
-  rafraichir() {
-    FILTRES.versURL();
-    const sel = FILTRES.appliquer(APP.parcelles);
-
-    const affiche = CARTE.dessinerParcelles(sel, APP.detail);
-    const ha = sel.reduce((s, p) => s + p.contenance, 0) / 10000;
-    const plusGrande = sel.reduce((m, p) => (p.contenance > (m?.contenance ?? 0) ? p : m), null);
-
-    document.getElementById("stats").innerHTML = `
-      <div><span>${sel.length}</span>parcelles retenues</div>
-      <div><span>${ha.toFixed(1)} ha</span>surface cumulée</div>
-      <div><span>${plusGrande ? (plusGrande.contenance / 10000).toFixed(2) + " ha" : "—"}</span>plus grande</div>
-      <div><span>${sel.filter(p => p.nbBatiments === 0).length}</span>parcelles nues</div>`;
-
-    if (!affiche) {
-      APP.statut(`${sel.length} parcelles : trop nombreuses pour la carte ` +
-                 `(seuil ${CONFIG.rendu.maxPolygones}). Resserrez les filtres — ` +
-                 `le tableau et l'export restent complets.`, true);
-    }
-    TABLE.rendre(sel, APP.detail);
-  },
-
-  /* ---- Panneau de détail --------------------------------------------------- */
-  detail(p) {
-    if (!p) return;
-    CARTE.selectionner(p);
-    const [lon, lat] = p.centre.map(v => v.toFixed(6));
-    document.getElementById("detail").innerHTML = `
-      <h3>${p.id}</h3>
-      <dl>
-        <dt>Section / n°</dt><dd>${p.prefixe} ${p.section} ${p.numero}</dd>
-        <dt>Contenance</dt><dd>${(p.contenance / 10000).toFixed(2)} ha (${p.contenance.toLocaleString("fr-FR")} m²)</dd>
-        <dt>Bâtiments cadastrés</dt><dd>${p.nbBatiments}</dd>
-        ${p.zonePLU ? `<dt>Zone PLU</dt><dd>${p.zonePLU} <span class="tag">${p.typeZone}</span></dd>` : ""}
-        <dt>Injecteur le plus proche</dt><dd>${p.distInjecteur == null ? "> 150 km" :
-          p.distInjecteur.toFixed(1) + " km — " + (p.nomInjecteur || "")}</dd>
-        <dt>Arpentée</dt><dd>${p.arpente ? "oui" : "non"}</dd>
-        <dt>MAJ cadastre</dt><dd>${p.updated || "—"}</dd>
-        <dt>Centroïde</dt><dd>${lat}, ${lon}</dd>
-      </dl>
-      <button id="btn-plu">Interroger le PLU (API Carto GPU)</button>
-      <div id="plu"></div>
-      <p class="liens">
-        <a target="_blank" href="${CONFIG.liens.geoportail(lon, lat)}">Géoportail</a>
-        <a target="_blank" href="${CONFIG.liens.gpu(lon, lat)}">Géoportail de l'urbanisme</a>
-        <a target="_blank" href="${CONFIG.liens.georisques(lon, lat)}">Géorisques</a>
-      </p>`;
-
-    document.getElementById("btn-plu").onclick = async () => {
-      const cible = document.getElementById("plu");
-      cible.innerHTML = "<em>Interrogation de l'API Carto…</em>";
-      try {
-        const r = await API.zonagePLU(p.centre);
-        cible.innerHTML = r.couvert
-          ? `<ul class="plu">${r.zones.map(z =>
-              `<li><strong>${z.libelle || "?"}</strong>` +
-              (z.libelong ? ` — ${z.libelong}` : "") +
-              ` <span class="tag">${z.typezone || ""}</span>` +
-              (z.urlPlan ? ` <a href="${z.urlPlan}" target="_blank">règlement</a>` : "") +
-              `</li>`).join("")}</ul>
-             <p class="avertissement">Le zonage numérique du GPU n'est pas opposable :
-             seul le document approuvé en mairie fait foi.</p>`
-          : `<p class="avertissement">Aucun zonage trouvé — commune non couverte par le
-             GPU, document non numérisé, ou commune au RNU.</p>`;
-      } catch (e) {
-        cible.innerHTML = `<p class="avertissement">API Carto indisponible : ${e.message}</p>`;
+  /* ---- Zonage PLU ---------------------------------------------------------- */
+  async function chargerZonage() {
+    if (!parcelles.length) return;
+    el('btn-zonage').disabled = true;
+    chargement(true, "Interrogation du Géoportail de l'urbanisme…");
+    try {
+      let bb = [180, 90, -180, -90];
+      for (const p of parcelles) {
+        const b = GEO.bbox(p.geometry);
+        bb = [Math.min(bb[0], b[0]), Math.min(bb[1], b[1]),
+              Math.max(bb[2], b[2]), Math.max(bb[3], b[3])];
       }
-    };
-  },
+      zones = await API.zonageEmprise(bb);
 
-  statut(msg, alerte = false) {
-    const el = document.getElementById("statut");
-    el.textContent = msg;
-    el.className = alerte ? "alerte" : "";
-  },
-};
+      let affectees = 0;
+      for (const p of parcelles) {
+        for (const z of zones) {
+          if (p.centre[0] < z.bbox[0] || p.centre[0] > z.bbox[2] ||
+              p.centre[1] < z.bbox[1] || p.centre[1] > z.bbox[3]) continue;
+          if (GEO.pointDans(p.centre, z.geometry)) {
+            p.zonePLU = z.libelle; p.typeZone = z.typezone;
+            p.zoneLibLong = z.libelong; p.zoneUrlPlan = z.urlPlan;
+            affectees++;
+            break;
+          }
+        }
+      }
 
-document.addEventListener("DOMContentLoaded", APP.init);
+      if (zones.length === 0) {
+        meta('Aucun zonage — commune au RNU, document non numérisé ou non versé au GPU');
+      } else {
+        el('filter-zone').disabled = false;
+        document.querySelectorAll('#color-mode .seg-btn').forEach(b =>
+          b.setAttribute('aria-pressed', String(b.dataset.mode === 'zonage')));
+        MapView.setMode('zonage');
+        meta(`${escapeHtml(commune.nom)} (${commune.code}) · ${fmtNum(zones.length)} zones PLU · ` +
+             `${fmtNum(affectees)}/${fmtNum(parcelles.length)} parcelles rattachées`);
+      }
+      rafraichir();
+      if (selectionId) afficherParcelle(index.get(selectionId));
+    } catch (e) {
+      meta('Zonage indisponible : ' + e.message);
+      console.error(e);
+    } finally {
+      el('btn-zonage').disabled = false;
+      chargement(false);
+    }
+  }
+
+  /* ---- Rendu --------------------------------------------------------------- */
+  function rafraichir() {
+    const sel = Filters.filtrer(parcelles);
+    const affiche = MapView.dessinerParcelles(sel);
+
+    el('map-empty').hidden = !(parcelles.length === 0 || sel.length === 0 || !affiche);
+    el('map-empty-reset').hidden = parcelles.length === 0;
+    el('map-empty-text').textContent =
+      parcelles.length === 0 ? 'Recherchez une commune pour charger son cadastre.'
+      : sel.length === 0 ? 'Aucune parcelle ne correspond aux filtres.'
+      : `${fmtNum(sel.length)} parcelles : trop nombreuses pour la carte. ` +
+        `Resserrez les filtres — le tableau et l'export restent complets.`;
+
+    majKPI(sel);
+    DataTable.update(sel);
+  }
+
+  function majKPI(sel) {
+    const surface = sel.reduce((s, p) => s + p.contenance, 0);
+    const max = sel.reduce((m, p) => (p.contenance > (m?.contenance ?? 0) ? p : m), null);
+    const nues = sel.filter(p => p.nbBatiments === 0).length;
+    const cartes = [
+      ['Parcelles retenues', fmtNum(sel.length), `sur ${fmtNum(parcelles.length)}`, true],
+      ['Surface cumulée', fmtHa(surface, 1), 'ha'],
+      ['Plus grande', max ? fmtHa(max.contenance) : '—', 'ha'],
+      ['Parcelles nues', fmtNum(nues), 'sans bâti cadastré'],
+    ];
+    el('kpi-strip').innerHTML = cartes.map(([label, valeur, sub, accent]) => `
+      <div class="kpi-card${accent ? ' kpi-accent' : ''}">
+        <div class="kpi-label">${label}</div>
+        <div class="kpi-value">${valeur}<span class="kpi-sub">${sub}</span></div>
+      </div>`).join('');
+  }
+
+  /* ---- Sélection d'une parcelle -------------------------------------------- */
+  function selectionner(id) {
+    const p = index.get(id);
+    if (!p) return;
+    selectionId = id;
+    MapView.selectionner(p, false);
+    DataTable.highlight(id);
+    afficherParcelle(p);
+    document.querySelector('.tab-btn[data-tab="parcelle"]').click();
+  }
+
+  function afficherParcelle(p) {
+    const lon = p.centre[0].toFixed(6), lat = p.centre[1].toFixed(6);
+    el('parcel-pane').innerHTML = `
+      <div class="parcel-head">
+        <h3>${escapeHtml(p.id)}</h3>
+        <span class="parcel-sub">Section ${escapeHtml(p.section)} · n° ${escapeHtml(p.numero)} ·
+          commune ${escapeHtml(p.commune)}</span>
+        ${p.zonePLU ? `<span class="zone-tag">${escapeHtml(p.zonePLU)}${
+          p.typeZone && p.typeZone !== p.zonePLU ? ' — ' + escapeHtml(p.typeZone) : ''}</span>` : ''}
+      </div>
+
+      <div class="parcel-grid">
+        <dl>
+          <dt>Contenance</dt><dd>${fmtHa(p.contenance)} ha</dd>
+          <dt>soit</dt><dd>${fmtNum(p.contenance)} m²</dd>
+          <dt>Bâtiments cadastrés</dt><dd>${fmtNum(p.nbBatiments)}</dd>
+          <dt>Arpentée</dt><dd>${p.arpente ? 'oui' : 'non'}</dd>
+        </dl>
+        <dl>
+          <dt>Injecteur le plus proche</dt>
+          <dd>${p.distInjecteur == null ? '> 150 km' : fmtNum(p.distInjecteur, 1) + ' km'}</dd>
+          <dt>Site</dt><dd>${escapeHtml(p.nomInjecteur || '—')}</dd>
+          <dt>MAJ cadastre</dt><dd>${escapeHtml(p.updated || '—')}</dd>
+          <dt>Centroïde</dt><dd>${lat}, ${lon}</dd>
+        </dl>
+      </div>
+
+      ${p.zonePLU ? `
+        <ul class="plu-list">
+          <li><strong>${escapeHtml(p.zonePLU)}</strong>${p.zoneLibLong ? ' — ' + escapeHtml(p.zoneLibLong) : ''}
+            ${p.typeZone && p.typeZone !== p.zonePLU ? `<span class="zone-tag">${escapeHtml(p.typeZone)}</span>` : ''}
+            ${p.zoneUrlPlan ? `<a href="${escapeHtml(p.zoneUrlPlan)}" target="_blank" rel="noopener noreferrer">règlement ↗</a>` : ''}
+          </li>
+        </ul>` : ''}
+
+      <div class="parcel-links">
+        <a href="${LIENS.geoportail(lon, lat)}" target="_blank" rel="noopener noreferrer">Géoportail ↗</a>
+        <a href="${LIENS.gpu(lon, lat)}" target="_blank" rel="noopener noreferrer">Géoportail de l'urbanisme ↗</a>
+        <a href="${LIENS.georisques(lon, lat)}" target="_blank" rel="noopener noreferrer">Géorisques ↗</a>
+        <a href="${LIENS.googleMaps(lon, lat)}" target="_blank" rel="noopener noreferrer">Google Maps ↗</a>
+      </div>
+
+      <p class="caveat">
+        Le cadastre ne porte pas la propriété : le PCI Vecteur donne la géométrie et la contenance,
+        pas le propriétaire. Le zonage du GPU est indicatif — seul le document approuvé en mairie
+        fait foi, et la parcelle est rattachée à la zone de son centroïde.
+      </p>`;
+  }
+
+  return { init, parcelle: id => index.get(id) };
+})();
+
+document.addEventListener('DOMContentLoaded', App.init);
