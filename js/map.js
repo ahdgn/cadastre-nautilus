@@ -1,128 +1,201 @@
-/* =============================================================================
-   Carte Leaflet : parcelles (couleur = contenance), bâti cadastré, injecteurs.
-   ========================================================================== */
+/* ============================================
+   Map — Leaflet
+   Couleur des parcelles = contenance ou zonage PLU
+   Légende dynamique, repliable
+   ============================================ */
 
-const CARTE = {
+const MapView = (() => {
+  const { TUILES, CLASSES_CONTENANCE, ZONAGE, PALETTE, RENDU,
+          fmtNum, fmtHa, escapeHtml, couleurContenance, couleurZone } = CONFIG;
 
-  map: null,
-  coucheParcelles: null,
-  coucheBatiments: null,
-  coucheInjecteurs: null,
-  selection: null,
-  controleLegende: null,
-  mode: "contenance",        // "contenance" | "zonage"
+  const FRANCE_BOUNDS = L.latLngBounds([41.2, -5.5], [51.3, 9.8]);
 
-  init() {
-    CARTE.map = L.map("carte", { preferCanvas: true }).setView([46.6, 2.4], 6);
-    L.tileLayer(CONFIG.fond.url, {
-      attribution: CONFIG.fond.attribution,
-      maxZoom: CONFIG.fond.maxZoom,
-    }).addTo(CARTE.map);
+  let map, coucheParcelles, coucheBatiments, coucheInjecteurs, selection, legendDiv;
+  let mode = 'contenance';                 // 'contenance' | 'zonage'
+  let legendCollapsed = window.matchMedia('(max-width: 860px)').matches;
+  let onSelect = () => {};
 
-    CARTE.coucheBatiments = L.geoJSON(null, {
-      style: { color: "#1E4260", weight: 0.5, fillColor: "#1E4260", fillOpacity: 0.18 },
+  function init(selectionCallback) {
+    onSelect = selectionCallback;
+
+    map = L.map('map', {
+      center: FRANCE_BOUNDS.getCenter(), zoom: 6, minZoom: 4,
+      zoomControl: true, zoomSnap: 0.25, preferCanvas: true,
+    });
+
+    L.tileLayer(TUILES.url, {
+      attribution: TUILES.attribution,
+      subdomains: TUILES.subdomains,
+      maxZoom: TUILES.maxZoom,
+    }).addTo(map);
+
+    L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
+
+    coucheBatiments = L.geoJSON(null, {
+      style: { color: PALETTE.navy, weight: 0.5, fillColor: PALETTE.navy, fillOpacity: 0.16 },
       interactive: false,
-    }).addTo(CARTE.map);
+    }).addTo(map);
+    coucheParcelles = L.geoJSON(null).addTo(map);
+    coucheInjecteurs = L.layerGroup().addTo(map);
 
-    CARTE.coucheParcelles = L.geoJSON(null).addTo(CARTE.map);
-    CARTE.coucheInjecteurs = L.layerGroup().addTo(CARTE.map);
+    creerLegende();
+    majLegende();
+  }
 
-    CARTE.legende();
-  },
+  /* ---- Mode de coloration ------------------------------------------------ */
+  function setMode(m) {
+    mode = m;
+    coucheParcelles.setStyle(style);
+    majLegende();
+  }
+  const getMode = () => mode;
 
-  couleurParcelle(p) {
-    if (CARTE.mode === "zonage") {
-      return CONFIG.zonage.couleurs[p.typeZone] || CONFIG.zonage.defaut;
-    }
-    let c = CONFIG.classesContenance[0].couleur;
-    for (const cl of CONFIG.classesContenance) if (p.contenance >= cl.min) c = cl.couleur;
-    return c;
-  },
+  function style(f) {
+    const p = App.parcelle(f.properties.id);
+    return {
+      color: '#ffffff', weight: 1, opacity: 0.9, fillOpacity: 0.68,
+      fillColor: mode === 'zonage' ? couleurZone(p.typeZone) : couleurContenance(p.contenance),
+    };
+  }
 
-  /* ---- Parcelles filtrées ------------------------------------------------- */
-  dessinerParcelles(parcelles, onClic) {
-    CARTE.coucheParcelles.clearLayers();
-    if (parcelles.length > CONFIG.rendu.maxPolygones) return false;
+  /* ---- Couches ----------------------------------------------------------- */
+  function dessinerParcelles(parcelles) {
+    coucheParcelles.clearLayers();
+    if (parcelles.length === 0 || parcelles.length > RENDU.maxPolygones) return false;
 
-    CARTE.coucheParcelles.addData({
-      type: "FeatureCollection",
-      features: parcelles.map(p => ({
-        type: "Feature", geometry: p.geometry, properties: { id: p.id },
-      })),
+    coucheParcelles.addData({
+      type: 'FeatureCollection',
+      features: parcelles.map(p => ({ type: 'Feature', geometry: p.geometry, properties: { id: p.id } })),
     });
-    CARTE.coucheParcelles.setStyle(f => {
-      const p = APP.index.get(f.properties.id);
-      return {
-        color: "#ffffff", weight: 1, opacity: 0.9,
-        fillColor: CARTE.couleurParcelle(p), fillOpacity: 0.65,
-      };
-    });
-    CARTE.coucheParcelles.eachLayer(l => {
-      l.on("click", () => onClic(APP.index.get(l.feature.properties.id)));
-      l.on("mouseover", () => l.setStyle({ weight: 3, color: CONFIG.palette.encre }));
-      l.on("mouseout",  () => l.setStyle({ weight: 1, color: "#ffffff" }));
+    coucheParcelles.setStyle(style);
+    coucheParcelles.eachLayer(l => {
+      const p = App.parcelle(l.feature.properties.id);
+      l.bindPopup(popup(p));
+      l.on('click', () => onSelect(p.id));
+      l.on('mouseover', () => l.setStyle({ weight: 3, color: PALETTE.navy }));
+      l.on('mouseout', () => l.setStyle({ weight: 1, color: '#ffffff' }));
     });
     return true;
-  },
+  }
 
-  dessinerBatiments(fc) {
-    CARTE.coucheBatiments.clearLayers();
-    if (fc && fc.features.length && fc.features.length < 20000) CARTE.coucheBatiments.addData(fc);
-  },
+  function dessinerBatiments(fc) {
+    coucheBatiments.clearLayers();
+    if (fc && fc.features.length && fc.features.length < 20000) coucheBatiments.addData(fc);
+  }
 
-  dessinerInjecteurs(injecteurs) {
-    CARTE.coucheInjecteurs.clearLayers();
-    for (const i of injecteurs) {
+  function dessinerInjecteurs(injecteurs) {
+    coucheInjecteurs.clearLayers();
+    injecteurs.forEach(i => {
       L.circleMarker([i.lonlat[1], i.lonlat[0]], {
         radius: Math.max(5, Math.min(14, Math.sqrt(i.capacite || 1) * 1.6)),
-        color: "#ffffff", weight: 1.5,
-        fillColor: i.ouvert ? CONFIG.palette.sauge : "#9aa5b1",
-        fillOpacity: 0.95,
-      })
-      .bindPopup(
-        `<strong>${i.nom || "—"}</strong><br>${i.commune || ""} — ${i.type || ""}<br>` +
-        `${i.capacite ? i.capacite.toFixed(1) + " GWh/an" : "capacité n.c."} · MES ${i.annee || "?"}<br>` +
-        `<em>${i.reseau || ""}</em>`)
-      .addTo(CARTE.coucheInjecteurs);
-    }
-  },
+        color: '#ffffff', weight: 1.5,
+        fillColor: i.ouvert ? PALETTE.sage : '#9aa5b1', fillOpacity: 0.95,
+      }).bindPopup(popupInjecteur(i)).addTo(coucheInjecteurs);
+    });
+  }
 
-  /* ---- Sélection / zoom --------------------------------------------------- */
-  selectionner(parcelle) {
-    if (CARTE.selection) CARTE.map.removeLayer(CARTE.selection);
-    CARTE.selection = L.geoJSON(parcelle.geometry, {
-      style: { color: CONFIG.palette.terracotta, weight: 4, fillOpacity: 0.1 },
-    }).addTo(CARTE.map);
-    CARTE.map.fitBounds(CARTE.selection.getBounds(), { maxZoom: 18, padding: [40, 40] });
-  },
+  function toggleCouche(nom, visible) {
+    const c = nom === 'batiments' ? coucheBatiments : coucheInjecteurs;
+    visible ? map.addLayer(c) : map.removeLayer(c);
+  }
 
-  cadrerCommune(commune) {
-    if (commune.contour) {
-      CARTE.map.fitBounds(L.geoJSON(commune.contour).getBounds(), { padding: [20, 20] });
-    } else if (commune.centre) {
-      CARTE.map.setView([commune.centre.coordinates[1], commune.centre.coordinates[0]], 13);
-    }
-  },
+  /* ---- Popups ------------------------------------------------------------ */
+  function popup(p) {
+    const rows = [
+      ['Contenance', `${fmtHa(p.contenance)} ha`],
+      ['Bâtiments', fmtNum(p.nbBatiments)],
+      ['Injecteur', p.distInjecteur == null ? '> 150 km' : `${fmtNum(p.distInjecteur, 1)} km`],
+    ];
+    if (p.zonePLU) rows.push(['Zone PLU', p.zonePLU]);
+    return `
+      <div class="popup-title">${escapeHtml(p.id)}</div>
+      <div class="popup-sub">${escapeHtml(`Section ${p.section} n° ${p.numero}`)}</div>
+      <dl class="popup-grid">
+        ${rows.map(([k, v]) => `<dt>${k}</dt><dd>${escapeHtml(String(v))}</dd>`).join('')}
+      </dl>
+      <div class="popup-foot">
+        <a class="popup-link" href="${CONFIG.LIENS.gpu(p.centre[0].toFixed(6), p.centre[1].toFixed(6))}"
+           target="_blank" rel="noopener noreferrer">Géoportail urbanisme ↗</a>
+      </div>`;
+  }
 
-  legende() {
-    if (CARTE.controleLegende) CARTE.map.removeControl(CARTE.controleLegende);
-    const l = L.control({ position: "bottomright" });
-    l.onAdd = () => {
-      const d = L.DomUtil.create("div", "legende");
-      const corps = CARTE.mode === "zonage"
-        ? "<strong>Zonage PLU</strong>" +
-          Object.entries(CONFIG.zonage.couleurs).map(([k, c]) =>
-            `<span><i style="background:${c}"></i>${k} — ${CONFIG.zonage.libelles[k]}</span>`).join("") +
-          `<span><i style="background:${CONFIG.zonage.defaut}"></i>hors PLU / non couvert</span>`
-        : "<strong>Contenance cadastrale</strong>" +
-          CONFIG.classesContenance.map(c =>
-            `<span><i style="background:${c.couleur}"></i>${c.label}</span>`).join("");
-      d.innerHTML = corps +
-        `<strong style="margin-top:6px">Injection biométhane</strong>` +
-        `<span><i style="background:${CONFIG.palette.sauge};border-radius:50%"></i>site en service</span>`;
-      return d;
+  function popupInjecteur(i) {
+    return `
+      <div class="popup-title">${escapeHtml(i.nom || '—')}</div>
+      <div class="popup-sub">${escapeHtml([i.commune, i.departement].filter(Boolean).join(' · '))}</div>
+      <dl class="popup-grid">
+        <dt>Type</dt><dd>${escapeHtml(i.type || '—')}</dd>
+        <dt>Capacité</dt><dd>${i.capacite != null ? fmtNum(i.capacite, 1) + ' GWh/an' : '—'}</dd>
+        <dt>Mise en service</dt><dd>${i.annee || '—'}</dd>
+        <dt>Réseau</dt><dd>${escapeHtml(i.reseau || '—')}</dd>
+      </dl>
+      <div class="popup-foot">
+        <span class="status-tag ${i.ouvert ? 'open' : 'closed'}">${i.ouvert ? 'En service' : 'Fermé'}</span>
+      </div>`;
+  }
+
+  /* ---- Sélection / cadrage ----------------------------------------------- */
+  function selectionner(p, zoom = true) {
+    if (selection) map.removeLayer(selection);
+    selection = L.geoJSON(p.geometry, {
+      style: { color: PALETTE.terracotta, weight: 4, fillOpacity: 0.08 },
+    }).addTo(map);
+    if (zoom) map.fitBounds(selection.getBounds(), { maxZoom: 18, padding: [40, 40] });
+  }
+
+  function cadrerCommune(commune) {
+    if (commune.contour) map.fitBounds(L.geoJSON(commune.contour).getBounds(), { padding: [16, 16] });
+    else if (commune.centre) map.setView([commune.centre.coordinates[1], commune.centre.coordinates[0]], 13);
+  }
+
+  /* ---- Légende ----------------------------------------------------------- */
+  function creerLegende() {
+    const legend = L.control({ position: 'bottomright' });
+    legend.onAdd = () => {
+      legendDiv = L.DomUtil.create('div', 'map-legend');
+      L.DomEvent.disableClickPropagation(legendDiv);
+      L.DomEvent.disableScrollPropagation(legendDiv);
+      return legendDiv;
     };
-    l.addTo(CARTE.map);
-    CARTE.controleLegende = l;
-  },
-};
+    legend.addTo(map);
+  }
+
+  function majLegende() {
+    if (!legendDiv) return;
+    const items = mode === 'zonage'
+      ? Object.entries(ZONAGE.couleurs).map(([k, c]) =>
+          [c, `${k} — ${ZONAGE.libelles[k]}`])
+        .concat([[ZONAGE.defaut, 'hors PLU / non couvert']])
+      : CLASSES_CONTENANCE.map(c => [c.couleur, c.label]);
+
+    legendDiv.className = 'map-legend' + (legendCollapsed ? ' collapsed' : '');
+    legendDiv.innerHTML = `
+      <button class="map-legend-toggle" aria-expanded="${!legendCollapsed}"
+              aria-label="Afficher ou masquer la légende">
+        <span class="map-legend-title">${mode === 'zonage' ? 'Zonage PLU' : 'Contenance cadastrale'}</span>
+        <span class="chevron" aria-hidden="true">▼</span>
+      </button>
+      <div class="map-legend-body">
+        ${items.map(([couleur, label]) => `
+          <div class="legend-item">
+            <span class="type-dot square" style="background:${couleur}"></span>
+            <span class="type-name">${escapeHtml(label)}</span>
+          </div>`).join('')}
+        <div class="legend-item">
+          <span class="type-dot" style="background:${PALETTE.sage}"></span>
+          <span class="type-name">Injection biométhane</span>
+        </div>
+        <p class="legend-note">Zonage indicatif — seul le document approuvé fait foi.</p>
+      </div>`;
+
+    legendDiv.querySelector('.map-legend-toggle').addEventListener('click', () => {
+      legendCollapsed = !legendCollapsed;
+      majLegende();
+    });
+  }
+
+  const invalidate = () => map && map.invalidateSize();
+
+  return { init, setMode, getMode, dessinerParcelles, dessinerBatiments, dessinerInjecteurs,
+           toggleCouche, selectionner, cadrerCommune, invalidate };
+})();

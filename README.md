@@ -1,11 +1,13 @@
-# Nautilus — Explorateur cadastral
+# Cadastre France — Explorateur foncier
 
 Application statique (aucun backend, aucune dépendance à installer) pour explorer
 le **PCI Vecteur / cadastre Etalab** commune par commune, le croiser avec les
 **points d'injection biométhane** et le **zonage PLU** du Géoportail de l'urbanisme.
 
-Même principe que `biomethane-france` : HTML + JS vanilla, Leaflet, `js/config.js`
-comme source unique de vérité, ETL Python optionnel dans `tools/`.
+Même socle que [`biomethane-france`](https://github.com/ahdgn/biomethane-france) :
+HTML + JS vanilla, Leaflet, `js/config.js` comme source unique de vérité,
+ETL Python optionnel dans `tools/`, et **la même feuille de style** — thème clair
+institutionnel à la charte Nautilus (Masterbook).
 
 ## Lancer
 
@@ -26,13 +28,25 @@ Aucune clé d'API, aucun compte. Tout est chargé à la volée depuis les serveu
    (parcelle nue ou non), distance à l'injecteur biométhane le plus proche.
 3. **Rattache le zonage PLU** — bouton *Charger le zonage PLU* : une requête
    API Carto IGN (module GPU) sur l'emprise communale, puis affectation par
-   point-dans-polygone. Bruz : 395 zones, 10 020/10 020 parcelles rattachées, ~5 s.
-4. **Filtre, cartographie, exporte** : contenance, section, parcelle nue,
-   distance injecteur, type de zone (U / AUc / AUs / A / N) → carte, tableau
-   triable, export CSV. L'état des filtres est dans l'URL (vue partageable).
+   point-dans-polygone. Bruz : 395 zones, 10 020/10 020 parcelles rattachées.
+4. **Filtre, cartographie, exporte** : contenance, section, bâti, distance
+   injecteur, type de zone (U / AUc / AUs / A / N) → bandeau KPI, carte,
+   onglet *Parcelle* (fiche détaillée + liens Géoportail / GPU / Géorisques),
+   onglet *Données* (tableau trié, paginé, export CSV). L'état des filtres est
+   dans l'URL (vue partageable).
 
 Exemple de requête métier, sur Bruz : *parcelle agricole, ≥ 3 ha, sans bâtiment,
 à moins de 5 km d'un injecteur* → **16 parcelles**, 65,9 ha cumulés.
+
+## Design
+
+L'identité visuelle est celle du portail Biométhane France : `css/style.css` est
+la feuille de style de ce dépôt, prolongée d'une section « Cadastre » qui réutilise
+les mêmes jetons (`--teal`, `--navy`, `--radius`, `--shadow`…). Comme dans
+`biomethane-france`, **rien n'est chargé depuis un CDN** : Leaflet et la fonte
+Roboto sont vendorisés dans `vendor/`, le logo dans `assets/`.
+
+Toute évolution du design doit rester alignée sur ce dépôt de référence.
 
 ## Sources
 
@@ -55,14 +69,44 @@ Exemple de requête métier, sur Bruz : *parcelle agricole, ≥ 3 ha, sans bâti
   reçoit celle de son centre. Les emprises à trous (enclaves) sont ignorées.
 - **Contenance ≠ surface géométrique** : on affiche la contenance cadastrale
   officielle, qui peut différer de l'aire calculée sur le polygone.
-- La carte plafonne à 4 000 polygones (cf. `CONFIG.rendu`) ; au-delà le tableau
+- La carte plafonne à 4 000 polygones (cf. `CONFIG.RENDU`) ; au-delà le tableau
   et l'export CSV restent complets.
+
+## Structure
+
+```
+index.html            coquille : header, sidebar de filtres, KPI, carte, panneau bas
+css/style.css         thème Biométhane France + section Cadastre
+js/config.js          palette, sources, seuils, formateurs   ← source unique de vérité
+js/geo.js             centroïde, bbox, haversine, point-dans-polygone (sans Turf)
+js/api.js             geo.api.gouv.fr, PCI Vecteur (gzip), ODRÉ, API Carto GPU
+js/filters.js         état des filtres, contrôles, synchro URL
+js/map.js             Leaflet, couches, légende, popups
+js/table.js           tri aria-sort, pagination, export CSV
+js/app.js             orchestration, enrichissement, KPI, fiche parcelle
+data/                 snapshot ODRÉ
+tools/                ETL Python optionnels
+vendor/, assets/      Leaflet, fonte Roboto, logo — rien via CDN
+```
 
 ## Outils
 
 ```bash
 python tools/fetch_commune.py 35047                  # pré-télécharge le PCI dans data/pci/
 python tools/build_injecteurs_json.py                # rafraîchit le snapshot ODRÉ
+```
+
+## Contribution
+
+`main` est protégée : **toute modification passe par une pull request**
+(pas de push direct, pas de force-push, historique linéaire).
+
+```bash
+git checkout -b feat/ma-brique
+# … modifications …
+git commit -am "feat: ma brique"
+git push -u origin feat/ma-brique
+gh pr create --fill
 ```
 
 ## Prochaines briques (par ordre d'utilité)
