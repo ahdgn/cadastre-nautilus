@@ -1,0 +1,11 @@
+# PCI pré-téléchargé par tools/fetch_commune.py (regénérable, volumineux)
+data/pci/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

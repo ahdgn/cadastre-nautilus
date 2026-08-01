@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nautilus — Explorateur cadastral</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header>
+  <div class="marque">
+    <span class="pastille"></span>
+    <div>
+      <h1>Nautilus — Explorateur cadastral</h1>
+      <p>PCI Vecteur (cadastre Etalab) × injection biométhane × PLU</p>
+    </div>
+  </div>
+  <div class="recherche">
+    <input id="recherche" type="search" placeholder="Commune ou code INSEE — ex. Bruz, 35047" autocomplete="off">
+    <ul id="suggestions"></ul>
+  </div>
+</header>
+
+<main>
+  <aside>
+    <h2 id="commune-titre">Aucune commune chargée</h2>
+
+    <section class="filtres">
+      <h3>Filtres</h3>
+      <label>Contenance min. (m²)<input id="f-min" type="number" step="1000" placeholder="30000"></label>
+      <label>Contenance max. (m²)<input id="f-max" type="number" step="1000" placeholder="—"></label>
+      <label>Distance max. à un injecteur (km)<input id="f-dinj" type="number" step="1" placeholder="—"></label>
+      <label>Section<input id="f-section" type="text" placeholder="ex. AB"></label>
+      <label>Zone PLU
+        <select id="f-zone">
+          <option value="">toutes</option>
+          <option value="U">U — urbaine</option>
+          <option value="AUc">AUc — à urbaniser (constructible)</option>
+          <option value="AUs">AUs — à urbaniser (strict)</option>
+          <option value="A">A — agricole</option>
+          <option value="N">N — naturelle</option>
+        </select>
+      </label>
+      <label class="case"><input id="f-nue" type="checkbox"> Parcelles nues uniquement</label>
+      <div class="boutons">
+        <button id="btn-reset" class="secondaire">Réinitialiser</button>
+        <button id="btn-csv">Export CSV</button>
+      </div>
+    </section>
+
+    <section class="couches">
+      <h3>Couches</h3>
+      <label class="case"><input id="t-batiments" type="checkbox" checked> Bâti cadastré</label>
+      <label class="case"><input id="t-injecteurs" type="checkbox" checked> Injecteurs biométhane</label>
+      <label>Colorer les parcelles par
+        <select id="mode-couleur">
+          <option value="contenance">contenance</option>
+          <option value="zonage">zonage PLU</option>
+        </select>
+      </label>
+      <button id="btn-zonage" class="secondaire">Charger le zonage PLU (GPU)</button>
+    </section>
+
+    <section id="stats" class="stats"></section>
+    <section id="detail" class="detail"><p class="vide">Cliquez une parcelle sur la carte ou dans le tableau.</p></section>
+  </aside>
+
+  <div class="droite">
+    <div id="carte"></div>
+    <div class="table-zone">
+      <div class="table-entete">
+        <h3>Parcelles retenues</h3>
+        <span id="table-info"></span>
+      </div>
+      <div id="tableau"></div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <p id="statut">Chargement…</p>
+  <p class="sources">
+    Sources : PCI Vecteur / DGFiP via <a href="https://cadastre.data.gouv.fr" target="_blank">cadastre.data.gouv.fr</a> (Licence Ouverte, MAJ trimestrielle) ·
+    <a href="https://geo.api.gouv.fr" target="_blank">geo.api.gouv.fr</a> ·
+    <a href="https://odre.opendatasoft.com" target="_blank">ODRÉ</a> ·
+    <a href="https://apicarto.ign.fr" target="_blank">API Carto IGN — module GPU</a>
+  </p>
+</footer>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="js/config.js"></script>
+<script src="js/geo.js"></script>
+<script src="js/api.js"></script>
+<script src="js/filters.js"></script>
+<script src="js/map.js"></script>
+<script src="js/table.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
