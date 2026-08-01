@@ -39,10 +39,11 @@ const CONFIG = (() => {
   };
 
   /* ---- Filtres par défaut -------------------------------------------------
-     30 000 m² = 3 ha : ordre de grandeur d'une unité de méthanisation avec
-     épuration, stockage et poste d'injection, extension comprise.            */
+     Aucun filtre au chargement : l'outil est généraliste, c'est à l'utilisateur
+     de poser ses seuils selon ce qu'il cherche (foncier industriel, solaire,
+     stockage, due diligence…). Ne recâblez pas de seuil métier ici.          */
   const FILTRES_DEFAUT = {
-    contenanceMin: 30000,
+    contenanceMin: null,
     contenanceMax: null,
     distanceInjecteurMax: null,
     section: '',
@@ -75,7 +76,10 @@ const CONFIG = (() => {
     defaut: '#C9D2DD',
   };
 
-  const RENDU = { maxPolygones: 4000 };
+  /* Au-delà de ce nombre, la carte n'affiche que les plus grandes parcelles et
+     le dit : redessiner 38 000 polygones prend ~4 s, 12 000 en prend ~1,5.
+     Le tableau et l'export, eux, restent toujours complets.                   */
+  const RENDU = { maxPolygones: 12000 };
 
   /* ---- Liens externes ---------------------------------------------------- */
   const LIENS = {

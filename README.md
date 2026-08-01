@@ -1,8 +1,13 @@
 # Cadastre France — Explorateur foncier
 
 Application statique (aucun backend, aucune dépendance à installer) pour explorer
-le **PCI Vecteur / cadastre Etalab** commune par commune, le croiser avec les
-**points d'injection biométhane** et le **zonage PLU** du Géoportail de l'urbanisme.
+le **PCI Vecteur / cadastre Etalab** commune par commune : géométrie des parcelles,
+contenance, bâti cadastré, et **destination au PLU** via le Géoportail de l'urbanisme.
+
+Outil **généraliste** : il ne présume d'aucune filière. Il répond à « montre-moi le
+foncier de cette commune, sa taille, son bâti, ce que le PLU y autorise » — ce qui
+vaut pour du solaire, du stockage, un site industriel, une due diligence ou une
+simple vérification avant réunion. Aucun seuil métier n'est câblé par défaut.
 
 Même socle que [`biomethane-france`](https://github.com/ahdgn/biomethane-france) :
 HTML + JS vanilla, Leaflet, `js/config.js` comme source unique de vérité,
@@ -16,6 +21,7 @@ python -m http.server 8010
 ```
 
 puis http://localhost:8010 — tapez une commune ou un code INSEE (ex. `Bruz`, `35047`).
+En ligne : **https://ahdgn.github.io/cadastre-nautilus/**
 
 Aucune clé d'API, aucun compte. Tout est chargé à la volée depuis les serveurs publics.
 
@@ -23,30 +29,25 @@ Aucune clé d'API, aucun compte. Tout est chargé à la volée depuis les serveu
 
 1. **Charge le PCI Vecteur** d'une commune à la demande (GeoJSON gzippé de
    `cadastre.data.gouv.fr`, décompressé dans le navigateur via `DecompressionStream`).
-   Bruz (35047) : 10 020 parcelles + 9 809 bâtiments en ~1,3 s.
 2. **Enrichit chaque parcelle** : centroïde, nombre de bâtiments cadastrés
-   (parcelle nue ou non), distance à l'injecteur biométhane le plus proche.
+   (parcelle nue ou non), distance au site le plus proche de la couche de référence.
 3. **Rattache le zonage PLU** — bouton *Charger le zonage PLU* : une requête
    API Carto IGN (module GPU) sur l'emprise communale, puis affectation par
-   point-dans-polygone. Bruz : 395 zones, 10 020/10 020 parcelles rattachées.
-4. **Filtre, cartographie, exporte** : contenance, section, bâti, distance
-   injecteur, type de zone (U / AUc / AUs / A / N) → bandeau KPI, carte,
-   onglet *Parcelle* (fiche détaillée + liens Géoportail / GPU / Géorisques),
-   onglet *Données* (tableau trié, paginé, export CSV). L'état des filtres est
-   dans l'URL (vue partageable).
+   point-dans-polygone.
+4. **Filtre, cartographie, exporte** : contenance, section, bâti, type de zone
+   (U / AUc / AUs / A / N) → bandeau KPI, carte, onglet *Parcelle* (fiche + liens
+   Géoportail / GPU / Géorisques), onglet *Données* (tableau trié, paginé, export CSV).
+   L'état des filtres est dans l'URL (vue partageable).
 
-Exemple de requête métier, sur Bruz : *parcelle agricole, ≥ 3 ha, sans bâtiment,
-à moins de 5 km d'un injecteur* → **16 parcelles**, 65,9 ha cumulés.
+Ordres de grandeur mesurés : Bruz (10 020 parcelles) charge en ~5 s et s'affiche
+en entier ; Rennes (38 807 parcelles, 45 958 bâtiments) en ~20 s.
 
-## Design
+## Couches de référence
 
-L'identité visuelle est celle du portail Biométhane France : `css/style.css` est
-la feuille de style de ce dépôt, prolongée d'une section « Cadastre » qui réutilise
-les mêmes jetons (`--teal`, `--navy`, `--radius`, `--shadow`…). Comme dans
-`biomethane-france`, **rien n'est chargé depuis un CDN** : Leaflet et la fonte
-Roboto sont vendorisés dans `vendor/`, le logo dans `assets/`.
-
-Toute évolution du design doit rester alignée sur ce dépôt de référence.
+Une couche de référence est un jeu de points auquel on mesure la distance de chaque
+parcelle. Une seule est fournie pour l'instant — les **sites d'injection biométhane**
+(ODRÉ, 818 points) — **décochée par défaut** : c'est un exemple, pas le sujet de l'outil.
+Postes sources, ICPE, friches viendront s'ajouter au même endroit.
 
 ## Sources
 
@@ -54,7 +55,7 @@ Toute évolution du design doit rester alignée sur ce dépôt de référence.
 |---|---|---|
 | Parcelles, bâtiments | PCI Vecteur — DGFiP via `cadastre.data.gouv.fr` | Licence Ouverte, trimestrielle |
 | Communes, contours, INSEE | `geo.api.gouv.fr` | Licence Ouverte |
-| Points d'injection biométhane | ODRÉ (`data/injecteurs-biomethane.json`, 818 points) | données au 01/01/2025 |
+| Couche de référence (exemple) | ODRÉ — sites d'injection biométhane | données au 01/01/2025 |
 | Zonage PLU / PLUi | API Carto IGN — module GPU | Géoportail de l'urbanisme |
 
 ## Limites à connaître
@@ -69,8 +70,10 @@ Toute évolution du design doit rester alignée sur ce dépôt de référence.
   reçoit celle de son centre. Les emprises à trous (enclaves) sont ignorées.
 - **Contenance ≠ surface géométrique** : on affiche la contenance cadastrale
   officielle, qui peut différer de l'aire calculée sur le polygone.
-- La carte plafonne à 4 000 polygones (cf. `CONFIG.RENDU`) ; au-delà le tableau
-  et l'export CSV restent complets.
+- **Carte plafonnée à 12 000 polygones** (`CONFIG.RENDU`) : au-delà, elle affiche
+  les plus grandes parcelles et l'annonce. Le tableau et l'export restent complets.
+  Mesure : 38 000 polygones = ~4 s de rendu, 12 000 = ~1,5 s.
+- **Une commune à la fois.** C'est la principale limite fonctionnelle aujourd'hui.
 
 ## Structure
 
@@ -79,21 +82,32 @@ index.html            coquille : header, sidebar de filtres, KPI, carte, panneau
 css/style.css         thème Biométhane France + section Cadastre
 js/config.js          palette, sources, seuils, formateurs   ← source unique de vérité
 js/geo.js             centroïde, bbox, haversine, point-dans-polygone (sans Turf)
-js/api.js             geo.api.gouv.fr, PCI Vecteur (gzip), ODRÉ, API Carto GPU
+js/api.js             geo.api.gouv.fr, PCI Vecteur (gzip), couche de référence, API Carto GPU
 js/filters.js         état des filtres, contrôles, synchro URL
 js/map.js             Leaflet, couches, légende, popups
 js/table.js           tri aria-sort, pagination, export CSV
 js/app.js             orchestration, enrichissement, KPI, fiche parcelle
-data/                 snapshot ODRÉ
+data/                 jeux de référence
 tools/                ETL Python optionnels
 vendor/, assets/      Leaflet, fonte Roboto, logo — rien via CDN
 ```
+
+## Règles de conception
+
+- **Rester généraliste.** Aucun seuil, filtre par défaut ou vocabulaire propre à une
+  filière dans le cœur de l'outil. Ce qui est spécifique à un usage se met dans une
+  couche de référence optionnelle ou dans un filtre que l'utilisateur pose lui-même.
+- **Ne jamais poser d'écouteur ni construire de popup par parcelle** : une commune
+  peut en compter 40 000. Les événements vivent sur le groupe Leaflet, les popups
+  sont construits à l'ouverture.
+- **Toute couche de la sidebar qui passe en surcouche sous 860 px** doit démarrer
+  fermée et se refermer sur le voile — sinon elle masque la carte.
 
 ## Outils
 
 ```bash
 python tools/fetch_commune.py 35047                  # pré-télécharge le PCI dans data/pci/
-python tools/build_injecteurs_json.py                # rafraîchit le snapshot ODRÉ
+python tools/build_injecteurs_json.py                # rafraîchit le jeu de référence ODRÉ
 ```
 
 ## Contribution
@@ -103,24 +117,16 @@ python tools/build_injecteurs_json.py                # rafraîchit le snapshot O
 
 ```bash
 git checkout -b feat/ma-brique
-# … modifications …
 git commit -am "feat: ma brique"
 git push -u origin feat/ma-brique
 gh pr create --fill
 ```
 
-## Prochaines briques (par ordre d'utilité)
+## Prochaines briques
 
-1. **Multi-commune** — charger un EPCI ou un rayon de X km autour d'un point,
-   pas une commune à la fois.
-2. **Contraintes rédhibitoires** — Géorisques (ICPE, PPRi, SIS) et INPN
-   (Natura 2000) en couches de disqualification, + distance au bâti résidentiel
-   (règle des 200 m de la rubrique ICPE 2781).
-3. **Réseau gaz** — capacité résiduelle de la maille et communes desservies
-   (Open Data GRDF), pour passer de « distance à l'injecteur » à « débouché réel ».
-4. **Propriétaires** — branchement Pappers Immobilier sur la short-list seulement
-   (quota), avec typologie de deal (foncier détenu par l'exploitant ou non).
-5. **Score de site** — combiner les couches en une note unique et rejoindre la
-   chaîne `qualification_sites.py` / `etage2_succession.py` du screening ACREnergy.
-6. **Cogénérations** — superposer les 1 002 sites du radar conversion en plus des
-   818 injecteurs.
+1. **Multi-commune** — charger un EPCI ou un rayon de X km autour d'un point.
+2. **Couches de contrainte** — Géorisques (ICPE, PPRi, SIS) et INPN (Natura 2000),
+   affichées et filtrables comme le zonage.
+3. **Autres couches de référence** — postes sources électriques, friches, ICPE.
+4. **Propriétaires** — Fichiers fonciers ou service tiers, sur une sélection réduite.
+5. **Comparaison de communes** — mettre deux territoires côte à côte.
